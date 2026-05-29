@@ -12,7 +12,10 @@ from pydantic import BaseModel
 
 from elliotts_casper_controller import __version__
 from elliotts_casper_controller.amcp_client import AMCPClient
-from elliotts_casper_controller.config_manager import load as load_config, save as save_config, regenerate_caspar_config
+from elliotts_casper_controller.config_manager import (
+    load as load_config, save as save_config,
+    regenerate_caspar_config, import_from_caspar_config,
+)
 from elliotts_casper_controller.process_manager import CasparProcessManager
 
 # ---------------------------------------------------------------------------
@@ -411,6 +414,26 @@ def api_log():
         return {"log": list(_log)}
 
 
+class ImportConfigRequest(BaseModel):
+    path: str
+
+
+@app.post("/api/config/import")
+def api_config_import(req: ImportConfigRequest):
+    import os
+    if not os.path.isfile(req.path):
+        raise HTTPException(status_code=404, detail=f"File not found: {req.path}")
+    try:
+        cfg = load_config()
+        merged = import_from_caspar_config(req.path, cfg)
+        save_config(merged)
+        regenerate_caspar_config(merged)
+        _log_event(f"Imported casparcg.config from {req.path}")
+        return {"ok": True, "video_mode": merged["video_mode"], "amcp_port": merged["amcp_port"]}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # ---------------------------------------------------------------------------
 # Pages
 # ---------------------------------------------------------------------------
@@ -574,9 +597,14 @@ def page_settings():
     <tbody id="channels-tbody"></tbody>
   </table>
 
-  <div style="display:flex;gap:10px;margin-top:20px">
+  <div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap">
     <button class="btn btn-primary" onclick="saveSettings()">Save & Regenerate Config</button>
     <button class="btn btn-secondary" onclick="loadSettings()">Reset</button>
+    <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      <input type="text" id="import-path" placeholder="Path to existing casparcg.config"
+             style="width:340px">
+      <button class="btn btn-warning" onclick="importConfig()">Import Config</button>
+    </div>
   </div>
 </div>
 """
@@ -625,6 +653,16 @@ function saveSettings() {
   api('/api/config', 'POST', payload).then(() => {
     toast('Settings saved and casparcg.config regenerated', 'success');
   }).catch(() => toast('Failed to save settings', 'error'));
+}
+
+function importConfig() {
+  const path = document.getElementById('import-path').value.trim();
+  if (!path) { toast('Enter a path to casparcg.config first', 'warning'); return; }
+  toast('Importing...', 'info');
+  api('/api/config/import', 'POST', { path }).then(d => {
+    toast(`Imported — video mode: ${d.video_mode}, AMCP port: ${d.amcp_port}`, 'success');
+    loadSettings();
+  }).catch(e => toast('Import failed: ' + (e.detail || e), 'error'));
 }
 
 loadSettings();

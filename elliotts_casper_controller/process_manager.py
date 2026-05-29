@@ -16,9 +16,12 @@ class CasparProcessManager:
         self._process: Optional[subprocess.Popen] = None
         self._client = AMCPClient(port=amcp_port)
 
-    def start(self) -> bool:
+    def start(self, config: dict | None = None) -> bool:
         if self.is_running():
             return True
+        if config:
+            from elliotts_casper_controller.config_manager import regenerate_caspar_config
+            regenerate_caspar_config(config)
         try:
             self._process = subprocess.Popen(
                 [self.exe_path],

@@ -18,7 +18,10 @@ from PIL import Image, ImageDraw, ImageTk
 
 from elliotts_casper_controller import __version__
 from elliotts_casper_controller.amcp_client import AMCPClient
-from elliotts_casper_controller.config_manager import load as load_config, save as save_config
+from elliotts_casper_controller.config_manager import (
+    load as load_config, save as save_config,
+    caspar_config_path, import_from_caspar_config,
+)
 from elliotts_casper_controller.process_manager import CasparProcessManager
 
 # Set Windows taskbar app ID
@@ -304,9 +307,9 @@ class CasperControllerGUI:
 
         # -- CasparCG path row --
         path_f = tk.Frame(content, bg=BG_CARD, pady=8, padx=12)
-        path_f.pack(fill=tk.X, pady=(0, 12))
-        tk.Label(path_f, text="CasparCG Path:", font=self.font_bold, bg=BG_CARD, fg=MUTED
-                 ).pack(side=tk.LEFT)
+        path_f.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(path_f, text="CasparCG Exe:", font=self.font_bold, bg=BG_CARD, fg=MUTED,
+                 width=13, anchor="w").pack(side=tk.LEFT)
         self._path_var = tk.StringVar(value=self._cfg.get("caspar_exe_path", "casparcg.exe"))
         path_entry = tk.Entry(path_f, textvariable=self._path_var,
                                bg=BG_MEDIUM, fg=TEXT, relief="flat",
@@ -314,6 +317,20 @@ class CasperControllerGUI:
         path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
         tk.Button(path_f, text="Browse", command=self._browse_exe,
                   bg=BTN_GRAY, fg=TEXT, relief="flat", padx=10,
+                  font=self.font_reg, cursor="hand2").pack(side=tk.LEFT)
+
+        # -- CasparCG config file row --
+        cfg_f = tk.Frame(content, bg=BG_CARD, pady=8, padx=12)
+        cfg_f.pack(fill=tk.X, pady=(0, 12))
+        tk.Label(cfg_f, text="Config File:", font=self.font_bold, bg=BG_CARD, fg=MUTED,
+                 width=13, anchor="w").pack(side=tk.LEFT)
+        self._config_path_var = tk.StringVar(value=self._config_file_label())
+        self._config_path_label = tk.Label(cfg_f, textvariable=self._config_path_var,
+                                            bg=BG_CARD, fg=MUTED, font=self.font_reg,
+                                            anchor="w", justify="left")
+        self._config_path_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
+        tk.Button(cfg_f, text="Import Config", command=self._import_caspar_config,
+                  bg=ACCENT, fg=TEXT, relief="flat", padx=10,
                   font=self.font_reg, cursor="hand2").pack(side=tk.LEFT)
 
         # -- Action buttons --
@@ -486,6 +503,11 @@ class CasperControllerGUI:
     # CasparCG process
     # -----------------------------------------------------------------------
 
+    def _config_file_label(self) -> str:
+        cfg = load_config()
+        p = caspar_config_path(cfg)
+        return p if p != "casparcg.config" else "(will be written next to casparcg.exe)"
+
     def _browse_exe(self):
         path = filedialog.askopenfilename(
             title="Select casparcg.exe",
@@ -497,6 +519,7 @@ class CasperControllerGUI:
             cfg = load_config()
             cfg["caspar_exe_path"] = path
             save_config(cfg)
+            self._config_path_var.set(caspar_config_path(cfg))
 
     def _save_exe_path(self) -> str:
         path = self._path_var.get().strip()
@@ -504,6 +527,31 @@ class CasperControllerGUI:
         cfg["caspar_exe_path"] = path
         save_config(cfg)
         return path
+
+    def _import_caspar_config(self):
+        path = filedialog.askopenfilename(
+            title="Select casparcg.config to import",
+            filetypes=[("CasparCG Config", "*.config"), ("XML files", "*.xml"), ("All files", "*.*")],
+            parent=self.root,
+        )
+        if not path:
+            return
+        try:
+            cfg = load_config()
+            merged = import_from_caspar_config(path, cfg)
+            save_config(merged)
+            messagebox.showinfo(
+                "Config Imported",
+                f"Settings imported from:\n{path}\n\n"
+                f"Video mode: {merged['video_mode']}\n"
+                f"AMCP port: {merged['amcp_port']}\n"
+                f"NDI names updated from config file.\n\n"
+                "Click 'Start CasparCG' to apply.",
+                parent=self.root,
+            )
+            self._log_to_console(f"Imported config from {path}")
+        except Exception as e:
+            messagebox.showerror("Import Failed", f"Could not import config:\n{e}", parent=self.root)
 
     def _start_caspar(self):
         exe = self._save_exe_path()
@@ -525,7 +573,7 @@ class CasperControllerGUI:
                     amcp_port=cfg["amcp_port"],
                     startup_delay=cfg["startup_delay"],
                 )
-                ok = manager.start()
+                ok = manager.start(config=cfg)  # writes casparcg.config to exe dir first
                 if ok:
                     client = AMCPClient(port=cfg["amcp_port"])
                     for ch in cfg["channels"]:

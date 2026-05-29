@@ -1,7 +1,7 @@
 """Read/write app config and regenerate casparcg.config."""
 import json
 import os
-from typing import List
+import xml.etree.ElementTree as ET
 
 DEFAULT_CONFIG = {
     "caspar_exe_path": "casparcg.exe",
@@ -10,16 +10,16 @@ DEFAULT_CONFIG = {
     "startup_delay": 8,
     "video_mode": "1080p2500",
     "channels": [
-        {"number": 1, "name": "GFXPVW", "ndi_name": "PCR3 GFXPVW", "url": "https://app.singular.live/output/66B4M4gG2cjcbEEP51ORwU/Output?aspect=16:9&g_custom1=GFXPVW"},
-        {"number": 2, "name": "GFX1",   "ndi_name": "PCR3 GFX1",   "url": "https://app.singular.live/output/66B4M4gG2cjcbEEP51ORwU/Output?aspect=16:9&g_custom1=GFX1"},
-        {"number": 3, "name": "GFX2",   "ndi_name": "PCR3 GFX2",   "url": "https://app.singular.live/output/66B4M4gG2cjcbEEP51ORwU/Output?aspect=16:9&g_custom1=GFX2"},
-        {"number": 4, "name": "GFX3",   "ndi_name": "PCR3 GFX3",   "url": "https://app.singular.live/output/66B4M4gG2cjcbEEP51ORwU/Output?aspect=16:9&g_custom1=GFX3"},
-        {"number": 5, "name": "GFX4",   "ndi_name": "PCR3 GFX4",   "url": "https://app.singular.live/output/66B4M4gG2cjcbEEP51ORwU/Output?aspect=16:9&g_custom1=GFX4"},
+        {"number": 1, "name": "GFX1",   "ndi_name": "PCR3 GFX1",   "url": "https://app.singular.live/output/66B4M4gG2cjcbEEP51ORwU/Output?aspect=16:9&g_custom1=GFX1"},
+        {"number": 2, "name": "GFX2",   "ndi_name": "PCR3 GFX2",   "url": "https://app.singular.live/output/66B4M4gG2cjcbEEP51ORwU/Output?aspect=16:9&g_custom1=GFX2"},
+        {"number": 3, "name": "GFX3",   "ndi_name": "PCR3 GFX3",   "url": "https://app.singular.live/output/66B4M4gG2cjcbEEP51ORwU/Output?aspect=16:9&g_custom1=GFX3"},
+        {"number": 4, "name": "GFX4",   "ndi_name": "PCR3 GFX4",   "url": "https://app.singular.live/output/66B4M4gG2cjcbEEP51ORwU/Output?aspect=16:9&g_custom1=GFX4"},
+        {"number": 5, "name": "GFXPVW", "ndi_name": "PCR3 GFXPVW", "url": "https://app.singular.live/output/66B4M4gG2cjcbEEP51ORwU/Output?aspect=16:9&g_custom1=GFXPVW"},
     ],
 }
 
 CONFIG_FILE = "elliotts_casper_config.json"
-CASPAR_CONFIG_FILE = "casparcg.config"
+CASPAR_CONFIG_FILENAME = "casparcg.config"
 
 
 def load() -> dict:
@@ -37,7 +37,16 @@ def save(config: dict) -> None:
         json.dump(config, f, indent=2)
 
 
-def regenerate_caspar_config(config: dict) -> None:
+def caspar_config_path(config: dict) -> str:
+    """Return the path where casparcg.config should be written (same dir as exe)."""
+    exe = config.get("caspar_exe_path", "")
+    if exe and os.path.isabs(exe):
+        return os.path.join(os.path.dirname(exe), CASPAR_CONFIG_FILENAME)
+    return CASPAR_CONFIG_FILENAME
+
+
+def regenerate_caspar_config(config: dict) -> str:
+    """Write casparcg.config next to casparcg.exe. Returns the path written."""
     channels_xml = ""
     for ch in config["channels"]:
         channels_xml += f"""
@@ -76,5 +85,39 @@ def regenerate_caspar_config(config: dict) -> None:
 
 </configuration>
 """
-    with open(CASPAR_CONFIG_FILE, "w", encoding="utf-8") as f:
+    out_path = caspar_config_path(config)
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write(xml)
+    return out_path
+
+
+def import_from_caspar_config(xml_path: str, existing_config: dict) -> dict:
+    """Parse an existing casparcg.config XML and merge settings into existing_config."""
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+
+    config = dict(existing_config)
+
+    # AMCP port
+    port_el = root.find(".//controllers/tcp/port")
+    if port_el is not None and port_el.text:
+        try:
+            config["amcp_port"] = int(port_el.text.strip())
+        except ValueError:
+            pass
+
+    # Channels — pick up video-mode and NDI names
+    channels_el = root.findall(".//channels/channel")
+    if channels_el:
+        # Use existing channel list as base, just update what we find
+        existing_channels = {ch["number"]: dict(ch) for ch in config["channels"]}
+        for i, ch_el in enumerate(channels_el, start=1):
+            vm = ch_el.find("video-mode")
+            if vm is not None and vm.text:
+                config["video_mode"] = vm.text.strip()  # last one wins (all same)
+            ndi_name = ch_el.find(".//consumers/ndi/name")
+            if i in existing_channels and ndi_name is not None and ndi_name.text:
+                existing_channels[i]["ndi_name"] = ndi_name.text.strip()
+        config["channels"] = [existing_channels[n] for n in sorted(existing_channels)]
+
+    return config
