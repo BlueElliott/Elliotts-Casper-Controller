@@ -1,6 +1,7 @@
 """Launch, monitor, and stop the CasparCG server process."""
 import os
 import subprocess
+import threading
 import time
 from typing import Optional
 
@@ -48,6 +49,12 @@ class CasparProcessManager:
             while time.time() < deadline:
                 time.sleep(1)
                 if self._client.ping():
+                    # CasparCG sets its own console title at startup.
+                    # Rename after a short delay so ours wins.
+                    threading.Thread(
+                        target=self._rename_console_after_delay,
+                        daemon=True,
+                    ).start()
                     return True
             return False
         except Exception:
@@ -72,6 +79,43 @@ class CasparProcessManager:
     @property
     def pid(self) -> Optional[int]:
         return self._process.pid if self._process else None
+
+    def _rename_console_after_delay(self, delay: float = 2.5) -> None:
+        """Wait for CasparCG to set its own title, then overwrite it with ours."""
+        time.sleep(delay)
+        if self._process:
+            self._rename_console_window(self._process.pid, self.window_title)
+
+    @staticmethod
+    def _rename_console_window(pid: int, title: str) -> None:
+        """Find console windows belonging to pid or any child process and rename them."""
+        try:
+            import ctypes
+            import ctypes.wintypes
+            user32 = ctypes.windll.user32
+
+            # Collect all PIDs in our process tree (cmd.exe + casparcg.exe)
+            try:
+                parent = psutil.Process(pid)
+                pids = {pid} | {c.pid for c in parent.children(recursive=True)}
+            except psutil.NoSuchProcess:
+                pids = {pid}
+
+            found: list = []
+
+            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+            def _cb(hwnd, _):
+                wpid = ctypes.wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
+                if wpid.value in pids:
+                    found.append(hwnd)
+                return True
+
+            user32.EnumWindows(_cb, 0)
+            for hwnd in found:
+                user32.SetWindowTextW(hwnd, title)
+        except Exception:
+            pass
 
     @staticmethod
     def _kill_tree(pid: int) -> None:
