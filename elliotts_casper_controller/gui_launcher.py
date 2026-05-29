@@ -622,12 +622,13 @@ class CasperControllerGUI:
         def run():
             try:
                 cfg = load_config()
-                manager = CasparProcessManager(
+                self._manager = CasparProcessManager(
                     exe_path=exe,
                     amcp_port=cfg["amcp_port"],
                     startup_delay=cfg["startup_delay"],
+                    window_title="PCR3 CasparCG — NDI Server",
                 )
-                ok = manager.start(config=cfg)  # writes casparcg.config to exe dir first
+                ok = self._manager.start(config=cfg)  # writes casparcg.config to exe dir first
                 if ok:
                     client = AMCPClient(port=cfg["amcp_port"])
                     for ch in cfg["channels"]:
@@ -635,10 +636,12 @@ class CasperControllerGUI:
                         self._log_to_console(f"CH{ch['number']} ({ch['name']}) -> {res[:60]}")
                     self.root.after(0, self._on_caspar_started)
                 else:
+                    self._manager = None
                     self.root.after(0, lambda: self._on_caspar_failed(
                         "CasparCG started but AMCP did not respond.\nCheck that the config is correct and NDI is installed."
                     ))
             except Exception as exc:
+                self._manager = None
                 self.root.after(0, lambda: self._on_caspar_failed(str(exc)))
 
         threading.Thread(target=run, daemon=True).start()
@@ -658,16 +661,14 @@ class CasperControllerGUI:
 
     def _stop_caspar(self):
         def run():
-            cfg = load_config()
-            client = AMCPClient(port=cfg["amcp_port"])
-            client.send("BYE")
-            time.sleep(1)
-            for proc in psutil.process_iter(["name"]):
-                if proc.info["name"] and "casparcg" in proc.info["name"].lower():
-                    try:
-                        proc.terminate()
-                    except psutil.NoSuchProcess:
-                        pass
+            if self._manager:
+                # Stop only our specific process — does not affect other CasparCG instances
+                self._manager.stop()
+                self._manager = None
+            else:
+                # Fallback: send BYE via AMCP only (no process kill)
+                cfg = load_config()
+                AMCPClient(port=cfg["amcp_port"]).send("BYE")
             self.root.after(0, self._on_caspar_stopped)
 
         self._disable_btn(self._btn_stop, "Stopping...")
