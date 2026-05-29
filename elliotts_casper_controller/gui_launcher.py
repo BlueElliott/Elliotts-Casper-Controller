@@ -10,7 +10,7 @@ import webbrowser
 import tkinter as tk
 from io import StringIO
 from pathlib import Path
-from tkinter import filedialog, messagebox, scrolledtext, simpledialog
+from tkinter import messagebox, scrolledtext, simpledialog
 
 import psutil
 import pystray
@@ -18,10 +18,7 @@ from PIL import Image, ImageDraw, ImageTk
 
 from elliotts_casper_controller import __version__
 from elliotts_casper_controller.amcp_client import AMCPClient
-from elliotts_casper_controller.config_manager import (
-    load as load_config, save as save_config,
-    caspar_config_path, import_from_caspar_config,
-)
+from elliotts_casper_controller.config_manager import load as load_config, save as save_config
 from elliotts_casper_controller.process_manager import CasparProcessManager
 
 # Set Windows taskbar app ID
@@ -122,7 +119,7 @@ class CasperControllerGUI:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title(f"Elliott's Casper Controller  v{__version__}")
-        self.root.geometry("750x700")
+        self.root.geometry("750x740")
         self.root.resizable(False, False)
         self.root.configure(bg=BG_DARK)
 
@@ -257,6 +254,8 @@ class CasperControllerGUI:
                              bg=BG_DARK, highlightthickness=0)
         port_cv.pack(pady=(0, 12))
         self._rounded_rect(port_cv, 0, 0, 670, 130, 20, BG_CARD)
+
+        # Web UI port (left)
         port_cv.create_text(220, 20, text="WEB UI PORT", fill=MUTED, font=self.font_bold)
         self._rounded_rect(port_cv, 150, 32, 290, 82, 12, ACCENT)
         self._port_text_id = port_cv.create_text(
@@ -265,15 +264,20 @@ class CasperControllerGUI:
         self._rounded_rect(port_cv, 175, 92, 265, 118, 12, BG_MEDIUM)
         port_cv.create_text(220, 105, text="Change Port", fill=MUTED, font=(self.font_reg[0], 9))
 
+        # AMCP port (right) — also clickable
         port_cv.create_text(480, 20, text="AMCP PORT", fill=MUTED, font=self.font_bold)
         self._rounded_rect(port_cv, 410, 32, 550, 82, 12, BTN_GRAY)
-        port_cv.create_text(480, 57, text=str(self._amcp_port), fill=TEXT, font=self.font_bold32)
-        port_cv.create_text(480, 96, text="(CasparCG AMCP)", fill=MUTED,
-                             font=(self.font_reg[0], 9))
+        self._amcp_text_id = port_cv.create_text(
+            480, 57, text=str(self._amcp_port), fill=TEXT, font=self.font_bold32
+        )
+        self._rounded_rect(port_cv, 435, 92, 525, 118, 12, BG_MEDIUM)
+        port_cv.create_text(480, 105, text="Change Port", fill=MUTED, font=(self.font_reg[0], 9))
 
         def _port_card_click(e):
             if 175 <= e.x <= 265 and 92 <= e.y <= 118:
                 self._change_web_port(port_cv)
+            elif 435 <= e.x <= 525 and 92 <= e.y <= 118:
+                self._change_amcp_port(port_cv)
         port_cv.bind("<Button-1>", _port_card_click)
         port_cv.bind("<Enter>",    lambda e: port_cv.configure(cursor="hand2"))
         port_cv.bind("<Leave>",    lambda e: port_cv.configure(cursor=""))
@@ -305,56 +309,47 @@ class CasperControllerGUI:
                                     font=self.font_reg, bg=BG_DARK, fg=MUTED)
         self._url_label.pack(pady=(0, 6))
 
-        # -- CasparCG path row --
-        path_f = tk.Frame(content, bg=BG_CARD, pady=8, padx=12)
-        path_f.pack(fill=tk.X, pady=(0, 4))
-        tk.Label(path_f, text="CasparCG Exe:", font=self.font_bold, bg=BG_CARD, fg=MUTED,
-                 width=13, anchor="w").pack(side=tk.LEFT)
+        # -- CasparCG path info (read-only — edit via Web UI Settings) --
         self._path_var = tk.StringVar(value=self._cfg.get("caspar_exe_path", "casparcg.exe"))
-        path_entry = tk.Entry(path_f, textvariable=self._path_var,
-                               bg=BG_MEDIUM, fg=TEXT, relief="flat",
-                               font=self.font_reg, insertbackground=TEXT)
-        path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
-        tk.Button(path_f, text="Browse", command=self._browse_exe,
-                  bg=BTN_GRAY, fg=TEXT, relief="flat", padx=10,
-                  font=self.font_reg, cursor="hand2").pack(side=tk.LEFT)
-
-        # -- CasparCG config file row --
-        cfg_f = tk.Frame(content, bg=BG_CARD, pady=8, padx=12)
-        cfg_f.pack(fill=tk.X, pady=(0, 12))
-        tk.Label(cfg_f, text="Config File:", font=self.font_bold, bg=BG_CARD, fg=MUTED,
-                 width=13, anchor="w").pack(side=tk.LEFT)
-        self._config_path_var = tk.StringVar(value=self._config_file_label())
-        self._config_path_label = tk.Label(cfg_f, textvariable=self._config_path_var,
-                                            bg=BG_CARD, fg=MUTED, font=self.font_reg,
-                                            anchor="w", justify="left")
-        self._config_path_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
-        tk.Button(cfg_f, text="Import Config", command=self._import_caspar_config,
-                  bg=ACCENT, fg=TEXT, relief="flat", padx=10,
-                  font=self.font_reg, cursor="hand2").pack(side=tk.LEFT)
+        info_f = tk.Frame(content, bg=BG_CARD, pady=7, padx=14)
+        info_f.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(info_f, text="CasparCG:", font=self.font_bold, bg=BG_CARD, fg=MUTED,
+                 width=10, anchor="w").pack(side=tk.LEFT)
+        self._exe_display = tk.Label(info_f, textvariable=self._path_var,
+                                      bg=BG_CARD, fg=TEXT, font=self.font_reg,
+                                      anchor="w", justify="left")
+        self._exe_display.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 10))
+        tk.Label(info_f, text="Configure in Web UI → Settings",
+                  bg=BG_CARD, fg=ACCENT, font=(self.font_reg[0], 9),
+                  cursor="hand2").pack(side=tk.LEFT)
 
         # -- Action buttons --
         btn_area = tk.Frame(content, bg=BG_DARK)
-        btn_area.pack(pady=(0, 8))
+        btn_area.pack(pady=(0, 6))
 
         row1 = tk.Frame(btn_area, bg=BG_DARK)
-        row1.pack(pady=5)
-        self._btn_start = self._make_btn(row1, "Start CasparCG", self._start_caspar, BTN_GREEN)
+        row1.pack(pady=4)
+        self._btn_start = self._make_btn(row1, "Start CasparCG", self._start_caspar, BTN_GREEN, h=46)
         self._btn_start.pack(side=tk.LEFT, padx=6)
-        self._btn_stop = self._make_btn(row1, "Stop CasparCG", self._stop_caspar, BTN_RED, state=tk.DISABLED)
+        self._btn_stop = self._make_btn(row1, "Stop CasparCG", self._stop_caspar, BTN_RED, h=46, state=tk.DISABLED)
         self._btn_stop.pack(side=tk.LEFT, padx=6)
 
         row2 = tk.Frame(btn_area, bg=BG_DARK)
-        row2.pack(pady=5)
-        self._btn_web = self._make_btn(row2, "Open Web UI", self._open_browser, BTN_BLUE, state=tk.DISABLED)
+        row2.pack(pady=4)
+        self._btn_web = self._make_btn(row2, "Open Web UI", self._open_browser, BTN_BLUE, h=46, state=tk.DISABLED)
         self._btn_web.pack(side=tk.LEFT, padx=6)
-        self._btn_console = self._make_btn(row2, "Open Console", self._toggle_console, BTN_GRAY)
+        self._btn_console = self._make_btn(row2, "Open Console", self._toggle_console, BTN_GRAY, h=46)
         self._btn_console.pack(side=tk.LEFT, padx=6)
 
         row3 = tk.Frame(btn_area, bg=BG_DARK)
-        row3.pack(pady=5)
-        self._make_btn(row3, "Hide to Tray", self._hide_to_tray, BTN_GRAY).pack(side=tk.LEFT, padx=6)
-        self._make_btn(row3, "Quit", self._on_close, BTN_RED_DK).pack(side=tk.LEFT, padx=6)
+        row3.pack(pady=4)
+        self._btn_update = self._make_btn(row3, "Check for Updates", self._check_updates, ACCENT, h=46)
+        self._btn_update.pack(side=tk.LEFT, padx=6)
+        self._make_btn(row3, "Hide to Tray", self._hide_to_tray, BTN_GRAY, h=46).pack(side=tk.LEFT, padx=6)
+
+        row4 = tk.Frame(btn_area, bg=BG_DARK)
+        row4.pack(pady=4)
+        self._make_btn(row4, "Quit", self._on_close, BTN_RED_DK, h=46).pack(side=tk.LEFT, padx=6)
 
         # -- Channel restarts --
         ch_outer = tk.Frame(content, bg=BG_DARK)
@@ -394,6 +389,22 @@ class CasperControllerGUI:
             self._url_label.config(text=f"http://127.0.0.1:{new_port}/")
             messagebox.showinfo("Port Changed",
                                 f"Web UI port changed to {new_port}.\nRestart the app for the new port to take effect.",
+                                parent=self.root)
+
+    def _change_amcp_port(self, port_cv):
+        new_port = simpledialog.askinteger(
+            "Change AMCP Port", "Enter CasparCG AMCP port:",
+            initialvalue=self._amcp_port, minvalue=1024, maxvalue=65535,
+            parent=self.root,
+        )
+        if new_port and new_port != self._amcp_port:
+            self._amcp_port = new_port
+            cfg = load_config()
+            cfg["amcp_port"] = new_port
+            save_config(cfg)
+            port_cv.itemconfig(self._amcp_text_id, text=str(new_port))
+            messagebox.showinfo("AMCP Port Changed",
+                                f"AMCP port changed to {new_port}.\nRestart CasparCG for changes to take effect.",
                                 parent=self.root)
 
     def _copy_url(self):
@@ -503,62 +514,52 @@ class CasperControllerGUI:
     # CasparCG process
     # -----------------------------------------------------------------------
 
-    def _config_file_label(self) -> str:
+    def _refresh_exe_display(self):
         cfg = load_config()
-        p = caspar_config_path(cfg)
-        return p if p != "casparcg.config" else "(will be written next to casparcg.exe)"
+        self._path_var.set(cfg.get("caspar_exe_path", "casparcg.exe"))
 
-    def _browse_exe(self):
-        path = filedialog.askopenfilename(
-            title="Select casparcg.exe",
-            filetypes=[("Executable", "*.exe"), ("All files", "*.*")],
-            parent=self.root,
-        )
-        if path:
-            self._path_var.set(path)
-            cfg = load_config()
-            cfg["caspar_exe_path"] = path
-            save_config(cfg)
-            self._config_path_var.set(caspar_config_path(cfg))
+    def _check_updates(self):
+        self._disable_btn(self._btn_update, "Checking...")
+        def run():
+            try:
+                import urllib.request, json as _json
+                url = "https://api.github.com/repos/BlueElliott/Elliotts-Casper-Controller/releases/latest"
+                req = urllib.request.Request(url, headers={"User-Agent": "ElliotsCasperController"})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    data = _json.loads(r.read())
+                latest = data.get("tag_name", "").lstrip("v")
+                current = __version__
+                if latest and latest != current:
+                    self.root.after(0, lambda: self._update_available(latest, data.get("html_url", "")))
+                else:
+                    self.root.after(0, self._up_to_date)
+            except Exception as e:
+                self.root.after(0, lambda: self._update_error(str(e)))
+        threading.Thread(target=run, daemon=True).start()
 
-    def _save_exe_path(self) -> str:
-        path = self._path_var.get().strip()
-        cfg = load_config()
-        cfg["caspar_exe_path"] = path
-        save_config(cfg)
-        return path
+    def _update_available(self, latest: str, url: str):
+        self._redraw_btn(self._btn_update, f"v{latest} Available!", BTN_ORNG, tk.NORMAL)
+        self._enable_btn(self._btn_update, lambda: webbrowser.open(url),
+                         f"v{latest} Available!", BTN_ORNG)
+        self._status_label.config(text=f"Update available: v{latest}", fg=WARNING)
 
-    def _import_caspar_config(self):
-        path = filedialog.askopenfilename(
-            title="Select casparcg.config to import",
-            filetypes=[("CasparCG Config", "*.config"), ("XML files", "*.xml"), ("All files", "*.*")],
-            parent=self.root,
-        )
-        if not path:
-            return
-        try:
-            cfg = load_config()
-            merged = import_from_caspar_config(path, cfg)
-            save_config(merged)
-            messagebox.showinfo(
-                "Config Imported",
-                f"Settings imported from:\n{path}\n\n"
-                f"Video mode: {merged['video_mode']}\n"
-                f"AMCP port: {merged['amcp_port']}\n"
-                f"NDI names updated from config file.\n\n"
-                "Click 'Start CasparCG' to apply.",
-                parent=self.root,
-            )
-            self._log_to_console(f"Imported config from {path}")
-        except Exception as e:
-            messagebox.showerror("Import Failed", f"Could not import config:\n{e}", parent=self.root)
+    def _up_to_date(self):
+        self._redraw_btn(self._btn_update, "Up to Date ✓", SUCCESS, tk.NORMAL)
+        self.root.after(3000, lambda: self._enable_btn(
+            self._btn_update, self._check_updates, "Check for Updates", ACCENT))
+
+    def _update_error(self, err: str):
+        self._redraw_btn(self._btn_update, "Check Failed", BTN_GRAY, tk.NORMAL)
+        self.root.after(3000, lambda: self._enable_btn(
+            self._btn_update, self._check_updates, "Check for Updates", ACCENT))
 
     def _start_caspar(self):
-        exe = self._save_exe_path()
+        exe = load_config().get("caspar_exe_path", "").strip()
         if not os.path.isfile(exe):
             messagebox.showerror(
                 "CasparCG Not Found",
-                f"Cannot find:\n{exe}\n\nPlease use the Browse button to locate casparcg.exe.",
+                f"Cannot find:\n{exe or '(no path set)'}\n\n"
+                "Go to Web UI → Settings to set the CasparCG executable path.",
                 parent=self.root,
             )
             return

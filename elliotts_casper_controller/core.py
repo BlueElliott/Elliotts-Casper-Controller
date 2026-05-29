@@ -560,13 +560,41 @@ function reloadFrame(n) {
 @app.get("/settings", response_class=HTMLResponse)
 def page_settings():
     body = """
-<div class="card" id="settings-form">
-  <h2 style="margin-bottom:16px">CasparCG</h2>
-  <div class="grid-2">
-    <div class="form-group">
-      <label>CasparCG Executable Path</label>
+<!-- CasparCG Executable -->
+<div class="card" style="margin-bottom:16px">
+  <h2 style="margin-bottom:16px">CasparCG Executable</h2>
+  <div style="display:flex;gap:10px;align-items:flex-end">
+    <div class="form-group" style="flex:1;margin:0">
+      <label>Path to casparcg.exe</label>
       <input type="text" id="caspar_exe_path" placeholder="C:\\CasparCG\\casparcg.exe">
     </div>
+    <button class="btn btn-primary" onclick="saveExePath()" style="flex-shrink:0">Save Path</button>
+  </div>
+  <p style="color:var(--muted);font-size:12px;margin-top:8px">
+    The config file (<code>casparcg.config</code>) will be written to the same folder as the exe when you start CasparCG.
+  </p>
+</div>
+
+<!-- Import existing casparcg.config -->
+<div class="card" style="margin-bottom:16px">
+  <h2 style="margin-bottom:12px">Import Existing casparcg.config</h2>
+  <p style="color:var(--muted);font-size:13px;margin-bottom:12px">
+    Point to an existing <code>casparcg.config</code> to import its video mode, AMCP port and NDI names.
+  </p>
+  <div style="display:flex;gap:10px;align-items:flex-end">
+    <div class="form-group" style="flex:1;margin:0">
+      <label>Path to casparcg.config</label>
+      <input type="text" id="import-path" placeholder="C:\\CasparCG\\casparcg.config">
+    </div>
+    <button class="btn btn-warning" onclick="importConfig()" style="flex-shrink:0">Import Config</button>
+  </div>
+  <div id="import-result" style="margin-top:10px;display:none" class="badge badge-success"></div>
+</div>
+
+<!-- Main settings -->
+<div class="card" id="settings-form">
+  <h2 style="margin-bottom:16px">Output Settings</h2>
+  <div class="grid-2">
     <div class="form-group">
       <label>Video Mode</label>
       <select id="video_mode">
@@ -597,14 +625,9 @@ def page_settings():
     <tbody id="channels-tbody"></tbody>
   </table>
 
-  <div style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap">
+  <div style="display:flex;gap:10px;margin-top:20px">
     <button class="btn btn-primary" onclick="saveSettings()">Save & Regenerate Config</button>
     <button class="btn btn-secondary" onclick="loadSettings()">Reset</button>
-    <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
-      <input type="text" id="import-path" placeholder="Path to existing casparcg.config"
-             style="width:340px">
-      <button class="btn btn-warning" onclick="importConfig()">Import Config</button>
-    </div>
   </div>
 </div>
 """
@@ -635,6 +658,13 @@ function renderChannelTable(channels) {
   `).join('');
 }
 
+function saveExePath() {
+  const path = document.getElementById('caspar_exe_path').value.trim();
+  api('/api/config', 'POST', { caspar_exe_path: path }).then(() => {
+    toast('CasparCG path saved', 'success');
+  }).catch(() => toast('Failed to save path', 'error'));
+}
+
 function saveSettings() {
   const channels = currentChannels.map((ch, i) => ({
     number: ch.number,
@@ -643,7 +673,6 @@ function saveSettings() {
     url: document.getElementById('ch_url_' + i).value,
   }));
   const payload = {
-    caspar_exe_path: document.getElementById('caspar_exe_path').value,
     video_mode: document.getElementById('video_mode').value,
     amcp_port: parseInt(document.getElementById('amcp_port').value),
     web_port: parseInt(document.getElementById('web_port').value),
@@ -660,7 +689,10 @@ function importConfig() {
   if (!path) { toast('Enter a path to casparcg.config first', 'warning'); return; }
   toast('Importing...', 'info');
   api('/api/config/import', 'POST', { path }).then(d => {
-    toast(`Imported — video mode: ${d.video_mode}, AMCP port: ${d.amcp_port}`, 'success');
+    const res = document.getElementById('import-result');
+    res.textContent = `Imported — video mode: ${d.video_mode}, AMCP port: ${d.amcp_port}`;
+    res.style.display = 'inline-block';
+    toast('Config imported successfully', 'success');
     loadSettings();
   }).catch(e => toast('Import failed: ' + (e.detail || e), 'error'));
 }
