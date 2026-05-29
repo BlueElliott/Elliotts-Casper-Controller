@@ -292,11 +292,20 @@ def page(title: str, active: str, body: str, extra_js: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 import os
+import sys
 from fastapi.responses import FileResponse
 
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
-if not os.path.isdir(STATIC_DIR):
-    STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+def _app_root() -> str:
+    """Return the root directory containing static/ — works both frozen and from source."""
+    if getattr(sys, "frozen", False):
+        # PyInstaller extracts everything to sys._MEIPASS
+        return sys._MEIPASS
+    # Running from source: go up one level from elliotts_casper_controller/
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+STATIC_DIR = os.path.join(_app_root(), "static")
 
 
 @app.get("/static/{filename:path}")

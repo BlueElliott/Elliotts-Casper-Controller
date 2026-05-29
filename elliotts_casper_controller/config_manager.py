@@ -1,7 +1,19 @@
 """Read/write app config and regenerate casparcg.config."""
 import json
 import os
+import sys
 import xml.etree.ElementTree as ET
+
+
+def _config_dir() -> str:
+    """Return the directory where the app config file should live.
+    When frozen (exe): same folder as the exe.
+    When running from source: project root (parent of this package).
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 DEFAULT_CONFIG = {
     "caspar_exe_path": "casparcg.exe",
@@ -18,13 +30,17 @@ DEFAULT_CONFIG = {
     ],
 }
 
-CONFIG_FILE = "elliotts_casper_config.json"
 CASPAR_CONFIG_FILENAME = "casparcg.config"
 
 
+def _config_file() -> str:
+    return os.path.join(_config_dir(), "elliotts_casper_config.json")
+
+
 def load() -> dict:
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
+    cfg_file = _config_file()
+    if os.path.exists(cfg_file):
+        with open(cfg_file, "r") as f:
             stored = json.load(f)
         config = dict(DEFAULT_CONFIG)
         config.update(stored)
@@ -33,7 +49,7 @@ def load() -> dict:
 
 
 def save(config: dict) -> None:
-    with open(CONFIG_FILE, "w") as f:
+    with open(_config_file(), "w") as f:
         json.dump(config, f, indent=2)
 
 
