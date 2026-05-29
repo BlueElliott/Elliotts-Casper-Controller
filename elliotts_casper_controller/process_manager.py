@@ -80,11 +80,14 @@ class CasparProcessManager:
     def pid(self) -> Optional[int]:
         return self._process.pid if self._process else None
 
-    def _rename_console_after_delay(self, delay: float = 2.5) -> None:
-        """Wait for CasparCG to set its own title, then overwrite it with ours."""
+    def _rename_console_after_delay(self, delay: float = 1.5) -> None:
+        """Continuously rename the console window while CasparCG is running.
+        CasparCG sets its own title multiple times during startup so a single
+        rename gets overwritten — looping every 2 s ensures ours always wins."""
         time.sleep(delay)
-        if self._process:
+        while self._process and self._process.poll() is None:
             self._rename_console_window(self._process.pid, self.window_title)
+            time.sleep(2)
 
     @staticmethod
     def _rename_console_window(pid: int, title: str) -> None:
