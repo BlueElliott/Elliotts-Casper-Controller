@@ -80,79 +80,122 @@ class CasparProcessManager:
     def pid(self) -> Optional[int]:
         return self._process.pid if self._process else None
 
-    def _rename_console_after_delay(self, delay: float = 1.5) -> None:
-        """Install a WinEventHook that fires every time the console title changes
-        and immediately renames it back to ours.  Polling can't win against
-        CasparCG which updates its title every frame (~25 fps)."""
+    def _rename_console_after_delay(self, delay: float = 2.0) -> None:
+        """Set console appearance after CasparCG finishes its own startup.
+
+        Two independent mechanisms:
+        1. Custom icon via WM_SETICON — CasparCG never changes the icon,
+           so it persists permanently in the taskbar and Alt-Tab view.
+        2. AttachConsole + SetConsoleTitleW — the same kernel32 path that
+           CasparCG uses, so we compete on equal footing. Called every 1 s.
+
+        Note: SetWindowTextW silently fails on console windows from another
+        process (conhost owns the window, not the client). Only AttachConsole
+        + SetConsoleTitleW is authoritative for the title.
+        """
         time.sleep(delay)
         if not self._process:
             return
         try:
-            self._run_title_keeper(self._process.pid, self.window_title)
+            self._run_console_appearance(self._process.pid, self.window_title)
         except Exception:
             pass
 
-    def _run_title_keeper(self, root_pid: int, title: str) -> None:
+    def _run_console_appearance(self, root_pid: int, title: str) -> None:
         import ctypes
         import ctypes.wintypes
 
-        EVENT_OBJECT_NAMECHANGE = 0x800C
-        WINEVENT_OUTOFCONTEXT   = 0x0000
-        PM_REMOVE               = 0x0001
+        user32   = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
 
-        user32 = ctypes.windll.user32
-
-        # Build the pid set once (cmd.exe + casparcg.exe children).
-        # Refresh every few seconds in the loop in case children change.
-        def _get_pids() -> set:
+        # --- Find child PIDs (conhost + casparcg) ---
+        conhost_pid  = None
+        caspar_pid   = root_pid
+        for _ in range(10):
             try:
-                p = psutil.Process(root_pid)
-                return {root_pid} | {c.pid for c in p.children(recursive=True)}
+                for child in psutil.Process(root_pid).children(recursive=True):
+                    name = child.name().lower()
+                    if 'conhost' in name:
+                        conhost_pid = child.pid
+                    if 'caspar' in name:
+                        caspar_pid  = child.pid
+                if conhost_pid and caspar_pid != root_pid:
+                    break
             except psutil.NoSuchProcess:
-                return {root_pid}
+                break
+            time.sleep(0.5)
 
-        pids: set = _get_pids()
-        pid_refresh_counter = [0]
+        # --- Set custom icon on console window via conhost HWND ---
+        # GetWindowThreadProcessId returns conhost's PID for console windows.
+        # WM_SETICON is permanent — CasparCG never overrides the window icon.
+        if conhost_pid:
+            icon_path = self._find_icon()
+            if icon_path:
+                try:
+                    LR_LOADFROMFILE = 0x10
+                    IMAGE_ICON      = 1
+                    WM_SETICON      = 0x0080
+                    ICON_SMALL, ICON_BIG = 0, 1
 
-        WinEventProc = ctypes.WINFUNCTYPE(
-            None,
-            ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD,
-            ctypes.wintypes.HWND,   ctypes.wintypes.LONG,
-            ctypes.wintypes.LONG,   ctypes.wintypes.DWORD,
-            ctypes.wintypes.DWORD,
-        )
+                    hwnd = self._find_hwnd_for_pid(conhost_pid)
+                    if hwnd:
+                        for icon_size, icon_type in [(16, ICON_SMALL), (32, ICON_BIG)]:
+                            hIcon = user32.LoadImageW(
+                                None, icon_path, IMAGE_ICON,
+                                icon_size, icon_size, LR_LOADFROMFILE,
+                            )
+                            if hIcon:
+                                user32.SendMessageW(hwnd, WM_SETICON, icon_type, hIcon)
+                except Exception:
+                    pass
 
-        def _on_name_change(hook, event, hwnd, id_obj, id_child, thread, time_ms):
+        # --- AttachConsole + SetConsoleTitleW loop ---
+        # FreeConsole is a no-op for a windowed app with no console.
+        kernel32.FreeConsole()
+        attached = bool(kernel32.AttachConsole(caspar_pid))
+        if not attached:
+            attached = bool(kernel32.AttachConsole(root_pid))
+
+        if attached:
+            while self._process and self._process.poll() is None:
+                kernel32.SetConsoleTitleW(title)
+                time.sleep(1.0)
+            kernel32.FreeConsole()
+
+    @staticmethod
+    def _find_hwnd_for_pid(pid: int):
+        """Return the first visible HWND whose owning process is `pid`."""
+        import ctypes
+        import ctypes.wintypes
+        user32 = ctypes.windll.user32
+        found = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+        def _cb(hwnd, _):
             wpid = ctypes.wintypes.DWORD()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
-            if wpid.value in pids:
-                buf = ctypes.create_unicode_buffer(256)
-                user32.GetWindowTextW(hwnd, buf, 256)
-                if buf.value != title:
-                    user32.SetWindowTextW(hwnd, title)
+            if wpid.value == pid and user32.IsWindowVisible(hwnd):
+                found.append(hwnd)
+            return True
 
-        proc = WinEventProc(_on_name_change)
-        hook = user32.SetWinEventHook(
-            EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE,
-            None, proc, 0, 0, WINEVENT_OUTOFCONTEXT,
+        user32.EnumWindows(_cb, 0)
+        return found[0] if found else None
+
+    @staticmethod
+    def _find_icon() -> str | None:
+        """Locate esc_icon.ico bundled with the app."""
+        import sys
+        candidates = []
+        if getattr(sys, 'frozen', False):
+            candidates.append(os.path.join(sys._MEIPASS, 'static', 'esc_icon.ico'))
+        candidates.append(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         'static', 'esc_icon.ico')
         )
-
-        msg = ctypes.wintypes.MSG()
-        while self._process and self._process.poll() is None:
-            # Drain message queue so hook callbacks fire
-            while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
-                user32.TranslateMessage(ctypes.byref(msg))
-                user32.DispatchMessageW(ctypes.byref(msg))
-            # Refresh pid set every ~10 s (500 × 20 ms)
-            pid_refresh_counter[0] += 1
-            if pid_refresh_counter[0] >= 500:
-                pid_refresh_counter[0] = 0
-                pids.clear()
-                pids.update(_get_pids())
-            time.sleep(0.02)
-
-        if hook:
-            user32.UnhookWinEvent(hook)
+        for p in candidates:
+            if os.path.isfile(p):
+                return p
+        return None
 
     @staticmethod
     def _kill_tree(pid: int) -> None:
