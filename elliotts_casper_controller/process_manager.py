@@ -81,44 +81,78 @@ class CasparProcessManager:
         return self._process.pid if self._process else None
 
     def _rename_console_after_delay(self, delay: float = 1.5) -> None:
-        """Continuously rename the console window while CasparCG is running.
-        CasparCG sets its own title multiple times during startup so a single
-        rename gets overwritten — looping every 2 s ensures ours always wins."""
+        """Install a WinEventHook that fires every time the console title changes
+        and immediately renames it back to ours.  Polling can't win against
+        CasparCG which updates its title every frame (~25 fps)."""
         time.sleep(delay)
-        while self._process and self._process.poll() is None:
-            self._rename_console_window(self._process.pid, self.window_title)
-            time.sleep(2)
-
-    @staticmethod
-    def _rename_console_window(pid: int, title: str) -> None:
-        """Find console windows belonging to pid or any child process and rename them."""
+        if not self._process:
+            return
         try:
-            import ctypes
-            import ctypes.wintypes
-            user32 = ctypes.windll.user32
-
-            # Collect all PIDs in our process tree (cmd.exe + casparcg.exe)
-            try:
-                parent = psutil.Process(pid)
-                pids = {pid} | {c.pid for c in parent.children(recursive=True)}
-            except psutil.NoSuchProcess:
-                pids = {pid}
-
-            found: list = []
-
-            @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
-            def _cb(hwnd, _):
-                wpid = ctypes.wintypes.DWORD()
-                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
-                if wpid.value in pids:
-                    found.append(hwnd)
-                return True
-
-            user32.EnumWindows(_cb, 0)
-            for hwnd in found:
-                user32.SetWindowTextW(hwnd, title)
+            self._run_title_keeper(self._process.pid, self.window_title)
         except Exception:
             pass
+
+    def _run_title_keeper(self, root_pid: int, title: str) -> None:
+        import ctypes
+        import ctypes.wintypes
+
+        EVENT_OBJECT_NAMECHANGE = 0x800C
+        WINEVENT_OUTOFCONTEXT   = 0x0000
+        PM_REMOVE               = 0x0001
+
+        user32 = ctypes.windll.user32
+
+        # Build the pid set once (cmd.exe + casparcg.exe children).
+        # Refresh every few seconds in the loop in case children change.
+        def _get_pids() -> set:
+            try:
+                p = psutil.Process(root_pid)
+                return {root_pid} | {c.pid for c in p.children(recursive=True)}
+            except psutil.NoSuchProcess:
+                return {root_pid}
+
+        pids: set = _get_pids()
+        pid_refresh_counter = [0]
+
+        WinEventProc = ctypes.WINFUNCTYPE(
+            None,
+            ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD,
+            ctypes.wintypes.HWND,   ctypes.wintypes.LONG,
+            ctypes.wintypes.LONG,   ctypes.wintypes.DWORD,
+            ctypes.wintypes.DWORD,
+        )
+
+        def _on_name_change(hook, event, hwnd, id_obj, id_child, thread, time_ms):
+            wpid = ctypes.wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
+            if wpid.value in pids:
+                buf = ctypes.create_unicode_buffer(256)
+                user32.GetWindowTextW(hwnd, buf, 256)
+                if buf.value != title:
+                    user32.SetWindowTextW(hwnd, title)
+
+        proc = WinEventProc(_on_name_change)
+        hook = user32.SetWinEventHook(
+            EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE,
+            None, proc, 0, 0, WINEVENT_OUTOFCONTEXT,
+        )
+
+        msg = ctypes.wintypes.MSG()
+        while self._process and self._process.poll() is None:
+            # Drain message queue so hook callbacks fire
+            while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+            # Refresh pid set every ~10 s (500 × 20 ms)
+            pid_refresh_counter[0] += 1
+            if pid_refresh_counter[0] >= 500:
+                pid_refresh_counter[0] = 0
+                pids.clear()
+                pids.update(_get_pids())
+            time.sleep(0.02)
+
+        if hook:
+            user32.UnhookWinEvent(hook)
 
     @staticmethod
     def _kill_tree(pid: int) -> None:
