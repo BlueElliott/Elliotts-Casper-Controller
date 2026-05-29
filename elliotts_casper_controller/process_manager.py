@@ -14,7 +14,7 @@ _CONSOLE_COLOR = "0B"
 
 class CasparProcessManager:
     def __init__(self, exe_path: str, amcp_port: int = 5250, startup_delay: int = 8,
-                 window_title: str = "PCR3 CasparCG — NDI Server"):
+                 window_title: str = "PCR3 CasparCG - NDI Server"):
         self.exe_path = exe_path
         self.amcp_port = amcp_port
         self.startup_delay = startup_delay
@@ -29,21 +29,16 @@ class CasparProcessManager:
             from elliotts_casper_controller.config_manager import regenerate_caspar_config
             regenerate_caspar_config(config)
         try:
-            # Wrap in cmd /k so we can:
-            #   - set a named window title (easy to spot among other consoles)
-            #   - set cyan-on-black colour
-            #   - keep the window open after CasparCG exits (useful for crash logs)
-            # The title string must not contain double-quotes; use the exe path quoted separately.
-            safe_title = self.window_title.replace('"', "'")
-            cmd = (
-                f'cmd /k "color {_CONSOLE_COLOR} & '
-                f'title {safe_title} & '
-                f'cd /d \\"{self._exe_dir()}\\" & '
-                f'\\"{self.exe_path}\\""'
-            )
+            # Launch via cmd /k so we can set the console title and colour.
+            # Using list form (no shell=True) avoids cmd quoting pitfalls.
+            # cwd is already set to the exe directory so we just use the basename.
+            exe_name = os.path.basename(self.exe_path)
+            # Strip characters that would break the cmd title command
+            safe_title = self.window_title.replace('"', "'").replace('&', 'and')
+            # cmd_str runs inside the new console: set colour, set title, run exe
+            cmd_str = f'color {_CONSOLE_COLOR} && title {safe_title} && "{exe_name}"'
             self._process = subprocess.Popen(
-                cmd,
-                shell=True,
+                ['cmd', '/k', cmd_str],
                 cwd=self._exe_dir(),
             )
             deadline = time.time() + self.startup_delay + 5
