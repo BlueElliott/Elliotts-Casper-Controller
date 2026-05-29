@@ -33,12 +33,15 @@ class CasparProcessManager:
             # Using list form (no shell=True) avoids cmd quoting pitfalls.
             # cwd is already set to the exe directory so we just use the basename.
             exe_name = os.path.basename(self.exe_path)
-            # Strip characters that would break the cmd title command
+            # Strip characters that break cmd title or quoting
             safe_title = self.window_title.replace('"', "'").replace('&', 'and')
-            # cmd_str runs inside the new console: set colour, set title, run exe
-            cmd_str = f'color {_CONSOLE_COLOR} && title {safe_title} && "{exe_name}"'
+            # Pass as a plain STRING (not a list) so Python skips list2cmdline.
+            # list2cmdline would escape the inner quotes as \" which cmd.exe then
+            # tries to execute literally as part of the filename.
+            # casparcg.exe has no spaces so no inner quoting is needed.
+            cmd = f'cmd /k "color {_CONSOLE_COLOR} && title {safe_title} && {exe_name}"'
             self._process = subprocess.Popen(
-                ['cmd', '/k', cmd_str],
+                cmd,
                 cwd=self._exe_dir(),
             )
             deadline = time.time() + self.startup_delay + 5
