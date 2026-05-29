@@ -493,19 +493,72 @@ class CasperControllerGUI:
             _kill_port(self._web_port)
             time.sleep(0.4)
 
+        # Suppress uvicorn's StreamHandlers — in a windowed exe sys.stderr may
+        # be None and any write to it kills the server thread silently.
+        import logging
+        for _log_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+            _lg = logging.getLogger(_log_name)
+            _lg.handlers = [logging.NullHandler()]
+            _lg.propagate = False
+
         cfg_obj = uvicorn.Config(app, host="0.0.0.0", port=self._web_port,
-                                  log_level="warning", access_log=False)
+                                  log_level="warning", access_log=False,
+                                  log_config=None)
         self._uvicorn_server = uvicorn.Server(cfg_obj)
+        self._server_error: str | None = None
 
         def run():
-            self._uvicorn_server.run()
+            try:
+                self._uvicorn_server.run()
+            except Exception as exc:
+                self._server_error = str(exc)
+                import traceback
+                tb = traceback.format_exc()
+                # Write to a log file next to exe so we can read it even without a console
+                try:
+                    from elliotts_casper_controller.config_manager import _config_dir
+                    log_path = os.path.join(_config_dir(), "webserver_error.log")
+                    with open(log_path, "w") as f:
+                        f.write(f"Server error: {exc}\n\n{tb}")
+                except Exception:
+                    pass
 
         self._server_thread = threading.Thread(target=run, daemon=True)
         self._server_thread.start()
-        self._web_running = True
-        self._start_time = time.time()
-        self._status_label.config(text=f"Web server running on port {self._web_port}", fg=ACCENT)
-        self._enable_btn(self._btn_web, self._open_browser, "Open Web UI", BTN_BLUE)
+
+        # Poll until the port is actually listening (max 12 s)
+        self.root.after(500, self._check_web_server_up, 0)
+
+    def _check_web_server_up(self, attempt: int):
+        """Poll until the web server is listening, then update UI. Max 24 attempts × 500 ms = 12 s."""
+        if _is_port_in_use(self._web_port):
+            self._web_running = True
+            self._start_time = time.time()
+            self._status_label.config(text=f"Web server running on port {self._web_port}", fg=ACCENT)
+            self._enable_btn(self._btn_web, self._open_browser, "Open Web UI", BTN_BLUE)
+            return
+
+        if self._server_error:
+            self._status_label.config(text="Web server failed to start", fg=ERROR)
+            messagebox.showerror(
+                "Web Server Error",
+                f"The web server failed to start on port {self._web_port}.\n\n{self._server_error}",
+                parent=self.root,
+            )
+            return
+
+        if attempt >= 24:
+            self._status_label.config(text=f"Web server timed out on port {self._web_port}", fg=WARNING)
+            messagebox.showwarning(
+                "Web Server Timeout",
+                f"The web server did not start within 12 seconds on port {self._web_port}.\n"
+                "Check that the port is not in use and try restarting.",
+                parent=self.root,
+            )
+            return
+
+        self._status_label.config(text=f"Starting web server… (attempt {attempt + 1})", fg=MUTED)
+        self.root.after(500, self._check_web_server_up, attempt + 1)
 
     def _open_browser(self):
         webbrowser.open(f"http://127.0.0.1:{self._web_port}")
